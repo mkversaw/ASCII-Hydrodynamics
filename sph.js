@@ -59,7 +59,7 @@ function clamp(number, min, max) {
     return Math.max(min, Math.min(number, max));
   }
 
-const N = 500; // number of particles	
+const numParticles = 500; // number of particles	
 
 const spacing = 1.0; // Spacing of particles
 
@@ -67,11 +67,12 @@ const k = spacing / 1000; // Far pressure weight
 //const k = 0.1; // Far pressure weight
 
 const k_near = k*2; // near pressure weight
-const gravity = 0.005 //
-const rest_density = 3;
-const r=spacing*1.25;						// Radius of Support
-//const r=spacing;						// Radius of Support
-const rsq=r*r;									// ... squared for performance stuff
+const gravity = 0.005 // acceleration of gravity
+const rest_density = 3.0; // default density
+const r=spacing*1.25;	// neighbor radius
+
+const max_velocity = 2.0;
+const wall_force = 0.04; // force applied to particles touching walls
 
 const width = 100;
 const height = 30;
@@ -89,14 +90,14 @@ class Particle {
     this.vel = new Vec2(0, 0);
     this.force = new Vec2(0, 0);
     this.mass = 1.0;
-    this.rho = 0;
-    this.rho_near = 0;
+    this.density = 0;
+    this.density_near = 0;
     this.press = 0;
     this.press_near = 0;
 	
     // if a highly viscous behavior is desired, σcan be increased. 
 	// For less viscous ﬂuids, only β should be set to a non-zero value
-	this.sigma = 0.1;
+	this.sigma = 0.2;
     this.beta = 0.0;
 
     this.neighbors = [];
@@ -104,9 +105,7 @@ class Particle {
 
     getParticleColorAndSymbol() {	
 		// Calculate color components
-        const x = 0.1 * this.rho;               // Blue component based on density
-
-		//console.log("rho",this.vel.x);
+        const x = 0.1 * this.density;               // Blue component based on density
 
         const y = Math.min(1, Math.abs(50 * this.vel.x));
         const z = Math.min(1, Math.abs(50 * this.force.x));  // Red component based on x-velocity
@@ -154,7 +153,7 @@ class Particle {
 
 		var fontStyle = "";
 
-		console.log(scale);
+		//console.log(scale);
 
 		let colorMag = (colors.r + colors.g + colors.b) / 765.0;
 
@@ -192,9 +191,9 @@ class Particle {
 
 function colorInterpolate(colorA, colorB, intval) {
 	return {
-	r : Math.round(colorA.r * (1 - intval) + colorB.r * intval),
-	g : Math.round(colorA.g * (1 - intval) + colorB.g * intval),
-	b : Math.round(colorA.b * (1 - intval) + colorB.b * intval)
+		r : Math.round(colorA.r * (1 - intval) + colorB.r * intval),
+		g : Math.round(colorA.g * (1 - intval) + colorB.g * intval),
+		b : Math.round(colorA.b * (1 - intval) + colorB.b * intval)
 	};
   }
 
@@ -268,7 +267,7 @@ function idle() {
 		// If the particle is outside the bounds of the world, then
 		// Make a little spring force to push it back in.
 		if(particles[i].pos.x < 0) { particles[i].force.x -= (particles[i].pos.x - 0) / 8};
-		if(particles[i].pos.x >  width) {particles[i].force.x -= (particles[i].pos.x - width) / 8};
+		if(particles[i].pos.x > width) {particles[i].force.x -= (particles[i].pos.x - width) / 8};
 
 		if(particles[i].pos.y < 0) {particles[i].force.y -= (particles[i].pos.y - 0) / 8};
 		
@@ -277,8 +276,8 @@ function idle() {
 		//console.log(temp,particles[i].force.y);
 
 		// Reset the nessecary items.
-		particles[i].rho = 0; 
-		particles[i].rho_near = 0;
+		particles[i].density = 0; 
+		particles[i].density_near = 0;
 		particles[i].neighbors = [];
 	}
 
@@ -290,61 +289,92 @@ function idle() {
 
 }
 
-// Calculate the density by basically making a weighted sum
-// of the distances of neighboring particles within the radius of support (r)
 function CalcDensity() {
-	for(let i = 0; i < particles.length; i++) { // for each particle
-		particles[i].rho = 0; 
-		particles[i].rho_near = 0;
+	for(let i = 0; i < particles.length; i++) {
+		let density = 0;
+		let density_near = 0;
+		for(let j = i + 1; j < particles.length; j++) {
+			let dist = Math.sqrt(
+				((particles[i].pos.x - particles[j].pos.x) ** 2) +
+				((particles[i].pos.y - particles[j].pos.y) ** 2)
+			);
 
-		// We will sum up the 'near' and 'far' densities.
-		let d = 0;
-		let dn = 0;
-
-		// only look at each pair of particles once. 
-		// dont calc interaction for a particle with itself!
-		for(let j = 0; j < i; j++) {
-
-			// The vector seperating the two particles
-			let rij = particles[j].pos.subVec(particles[i].pos);
-
-			let rij_len2 = rij.lenSquared();
-
-			// If they're within the radius of support ...
-			if(rij_len2 < rsq)
-			{
-				// Get the actual distance from the squared distance.
-				let rij_len = Math.sqrt(rij_len2);
-
-				// And calculated the weighted distance values
-				let q = (1 - rij_len) / r;
-				let q2 = q*q;
-				let q3 = q2*q;
-
-				d += q2;
-				dn += q3;
-
+			if (dist < r) {
+				let normal_distance = (1 - dist) / r;
+			
+				density += normal_distance ** 2
+				density_near += normal_distance ** 3
+	
 				// Accumulate on the neighbor
-				particles[j].rho += q2;
-				particles[j].rho_near += q3;
-
-				// Set up the neighbor list for faster access later.
-				let n = new Neighbor(i,j,q,q2);        
+				particles[j].density += (normal_distance ** 2);
+				particles[j].density_near += (normal_distance ** 3);
+				let n = new Neighbor(i,j,density,density_near);   
 				particles[i].neighbors.push(n);
 			}
 		}
-		particles[i].rho += d;
-		particles[i].rho_near += dn;
+		particles[i].density += density;
+		particles[i].density_near += density_near;
 	}
+
 }
+
+
+
+// Calculate the density by basically making a weighted sum
+// of the distances of neighboring particles within the radius of support (r)
+// function CalcDensity() {
+// 	for(let i = 0; i < particles.length; i++) { // for each particle
+// 		//particles[i].density = 0; 
+// 		//particles[i].density_near = 0;
+
+// 		// We will sum up the 'near' and 'far' densities.
+// 		let density = 0;
+// 		let density_near = 0;
+
+// 		// only look at each pair of particles once. 
+// 		// dont calc interaction for a particle with itself!
+// 		for(let j = 0; j < i; j++) {
+
+// 			// The vector seperating the two particles
+			
+// 			let dist = (
+// 				((particles[j].pos.x - particles[i].pos.x) ** 2) +
+// 				((particles[j].pos.y - particles[i].pos.y) ** 2)
+// 			);
+
+// 			// If they're within the radius of support ...
+// 			if(dist < (r*r))
+// 			{
+// 				let distance = Math.sqrt(dist);
+
+// 				// And calculated the weighted distance values
+// 				let normal_distance = (1 - distance) / r;
+				
+// 				density += normal_distance ** 2
+// 				density_near += normal_distance ** 3
+
+// 				// Accumulate on the neighbor
+// 				particles[j].density += (normal_distance ** 2);
+// 				particles[j].density_near += (normal_distance ** 3);
+
+// 				// Set up the neighbor list for faster access later.
+// 				let n = new Neighbor(i,j,density,density_near);        
+// 				particles[i].neighbors.push(n);
+// 			}
+// 		}
+
+// 		particles[i].density = density;
+// 		particles[i].density_near = density_near;
+// 	}
+// }
 
 function CalcPressureAndForce() {
 	// Make the simple pressure calculation from the equation of state.
 	
 	for(let i = 0; i < particles.length; i++)
 	{
-		particles[i].press = k * (particles[i].rho - rest_density);
-		particles[i].press_near = k_near * particles[i].rho_near;
+		particles[i].press = k * (particles[i].density - rest_density);
+		particles[i].press_near = k_near * particles[i].density_near;
 	}
 
 	// Force particles in or out from their neighbors based on their difference from the rest density
@@ -399,14 +429,13 @@ function CalcViscosity() {
 			let n = particles[i].neighbors[ni]; // TODO?
 
 			// The vector from particle i to particle j
+
 			let rij = particles[n.j].pos.subVec(particles[i].pos); 
 			
 			let l = (rij).len();
 			let q = l / r;
 
 			let rijn = rij.divScalar(l);
-
-			
 
 			// Get the projection of the velocities onto the vector between them.
 			let u = (particles[n.i].vel.subVec(particles[n.j].vel)).multVec(rijn);
@@ -429,6 +458,92 @@ function CalcViscosity() {
 	}	
 }
 
+let height2 = height * 2;
+let width2 = width * 2;
+
+let grid2 = Array(height2).fill().map(() => Array(width2).fill(0));
+let grid3 = Array(height2).fill().map(() => Array(width2).fill(' '));
+
+function render2() {
+	for (let y = 0; y < height2; y++) {
+        grid2[y].fill(0); // Reset each row
+		// grid3.fill(' ');
+    }
+
+	//console.log(grid3);
+
+	for(let i = 0; i < width2; i++) {
+		for(let j = 0; j < height2; j++) {
+			grid3[j][i] = ' ';
+		}
+	}
+	
+	for (const particle of particles) {
+        var gridX = Math.floor(particle.pos.x);
+        var gridY = Math.floor(particle.pos.y);
+
+		gridX = clamp(gridX,0,width);
+		gridY = clamp(gridY,0,height);
+
+		if (gridY >= 0 && gridY < height2 - 1 && gridX >= 0 && gridX < width2 - 1) {
+			grid2[gridY][gridX]   |= 8; // set 4th bit to 1
+			grid2[gridY][gridX + 1] |= 4; // set 3rd bit to 1
+			// now the cell in row below
+			grid2[gridY - 1][gridX]   |= 2; // set 2nd bit to 1
+			grid2[gridY - 1][gridX + 1] |= 1; // set 1st bit to 1
+		}
+	}
+	try {
+		var i = 0;
+		// var j = 0;
+
+		let charList = " '`-.|//,\\|\\_\\/#";
+
+		for(i = 0; i < width2; i++) {
+			for(let j = 0; j < height2; j++) {
+				var test2 = charList[grid2[j][i]];
+				grid3[j][i] = test2;
+				// console.log((grid3[j][i]));
+			}
+		}
+	} catch (error) {
+		//console.log(error);
+		console.log("gwa",i,error);
+		//return;
+	}
+
+	//console.log(grid3);
+
+	// Build up the HTML string outside the loop
+	let html = grid3.map(row => row.join('')).join('<br>');
+
+	// Only update the DOM if necessary
+	if (asciiDisplay.innerHTML !== html) {
+		asciiDisplay.innerHTML = html;
+	}
+
+        // if (gridX >= 0 && gridX < width && gridY >= 0 && gridY < height) {
+            
+		// 	for(let i = gridX - 1; i < gridX + 1; i++) {
+		// 		if(i < 0 || i >= width2) {
+		// 			continue;
+		// 		}
+				
+		// 		for(let j = gridY - 1; j < gridY + 1; j++) {
+		// 			if(j < 0 || j >= height2) {
+		// 				continue;
+		// 			}
+		// 		}
+		// 	}
+			
+		// 	//const { color, symbol, fontStyle } = particle.getParticleColorAndSymbol();
+        //     // Directly update the grid's cell with the HTML string for this particle
+        //     //grid[gridY][gridX] = `<span style="font-style:${fontStyle};color:${color};">${symbol}</span>`;
+        // } else {
+		// 	//console.log(gridX,gridY);
+		// }
+    
+}
 
 // Persistent grid to avoid recreating it each frame
 let grid = Array(height).fill().map(() => Array(width).fill(' '));
@@ -495,17 +610,14 @@ function init() {
     for(let y = height - 10; y <= 10000; y += r * 0.5) {
 		for(let x = 0; x <= w; x += r * 0.5)
 		{
-			if(particles.length > N) {
+			if(particles.length > numParticles) {
 				break;
 			}
 
 			let p = new Particle(x,y);
-			p.pos_old = p.pos.addVec(new Vec2(0,0)).multVec(new Vec2(2,3));
-
 			particles.push(p);
 		}
 	}
-
 }
 
 
@@ -550,6 +662,10 @@ function animate() {
 	if(firstTime == 0) {
 		firstTime = 1;
 		init();
+
+		// idle();
+		// render2();
+		//window.stop();
 	}
 
 	idle(); // always idle?
@@ -571,6 +687,6 @@ function animate() {
         then = now - (elapsed % fpsInterval);
 
         // drawing code here
-		render();
+		render2();
     }
 }
